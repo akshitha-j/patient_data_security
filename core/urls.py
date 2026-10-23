@@ -34,4 +34,10 @@ urlpatterns = [
 
     # Audit – Phase 3 (admin only)
     path("audit/", views.audit_log, name="audit_log"),
+
+    # Consent management – Final
+    path("patients/<str:patient_id>/consent/",        views.consent_manage,  name="consent_manage"),
+    path("patients/<str:patient_id>/consent/grant/",  views.consent_grant,   name="consent_grant"),
+    path("consent/<int:grant_id>/revoke/",            views.consent_revoke,  name="consent_revoke"),
+    path("consent/<int:grant_id>/history/",           views.consent_history, name="consent_history"),
 ]

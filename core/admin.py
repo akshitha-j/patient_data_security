@@ -1,7 +1,10 @@
 """Admin registrations for core models – Phase 2 + Phase 3."""
 
 from django.contrib import admin
-from .models import AuditLog, MedicalDocument, OTPToken, PatientProfile, SharingGrant, UserProfile
+from .models import (
+    AuditLog, ConsentEvent, ConsentGrant,
+    MedicalDocument, OTPToken, PatientProfile, SharingGrant, UserProfile,
+)
 
 
 @admin.register(UserProfile)
@@ -59,4 +62,34 @@ class AuditLogAdmin(admin.ModelAdmin):
         return False
 
     def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(ConsentGrant)
+class ConsentGrantAdmin(admin.ModelAdmin):
+    list_display    = ("pk", "patient", "grantee", "purpose", "status", "granted_at", "revoked_at")
+    list_filter     = ("status", "purpose")
+    search_fields   = ("patient__patient_id", "grantee__username", "grantee__email")
+    readonly_fields = ("granted_at", "updated_at")
+    raw_id_fields   = ("patient", "grantee")
+
+    def has_delete_permission(self, request, obj=None):
+        # Preserve append-only semantics: admin may not delete consent records.
+        return False
+
+
+@admin.register(ConsentEvent)
+class ConsentEventAdmin(admin.ModelAdmin):
+    list_display    = ("pk", "grant", "action", "actor", "timestamp", "reason")
+    list_filter     = ("action",)
+    search_fields   = ("grant__patient__patient_id", "actor__username")
+    readonly_fields = ("grant", "action", "actor", "timestamp", "reason")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
         return False

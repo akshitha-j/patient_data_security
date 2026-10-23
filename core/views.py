@@ -44,9 +44,10 @@ from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 
-from .forms import DocumentUploadForm, ShareDocumentForm
+from .forms import DocumentUploadForm, ShareDocumentForm, ConsentGrantForm
 from .models import (
     AuditLog, AuditOutcome,
+    ConsentGrant, ConsentEvent, ConsentPurpose, ConsentStatus,
     MedicalDocument, OTPToken,
     PatientProfile, Role,
     SharingGrant, UserProfile,
@@ -81,6 +82,22 @@ def _can_access_patient(role, user, profile) -> bool:
         except PatientProfile.DoesNotExist:
             return False
     return False   # management, unknown
+
+
+def _has_consent(patient_profile, grantee_user, purpose: str) -> bool:
+    """
+    Return True if grantee_user has an active (GRANTED) ConsentGrant for the
+    given purpose on patient_profile.
+
+    Used to gate doctor access beyond the basic assignment check.
+    Admin is never passed through this function (admins bypass consent).
+    """
+    return ConsentGrant.objects.filter(
+        patient=patient_profile,
+        grantee=grantee_user,
+        purpose=purpose,
+        status=ConsentStatus.GRANTED,
+    ).exists()
 
 
 # ── Public pages ──────────────────────────────────────────────────────────────
@@ -335,6 +352,18 @@ def document_list(request, patient_id):
         messages.error(request, "You are not authorised to view this patient's documents.")
         return redirect("core:dashboard")
 
+    # Doctors additionally require patient consent for document access.
+    if role == Role.DOCTOR and not _has_consent(profile, request.user, ConsentPurpose.ACCESS_DOCUMENTS):
+        AuditLog.log(action="doc_list", outcome=AuditOutcome.DENIED,
+                     user=request.user, resource_type="PatientProfile",
+                     resource_id=patient_id, reason="No access_documents consent")
+        messages.error(
+            request,
+            "You do not have the patient's consent to access their documents. "
+            "The patient must grant 'Access Patient Documents' consent first."
+        )
+        return redirect("core:patient_detail", patient_id=patient_id)
+
     docs = profile.documents.select_related("uploaded_by").all()
     ctx  = {"profile": profile, "docs": docs, "role": role}
     return render(request, "core/document_list.html", ctx)
@@ -422,6 +451,10 @@ def document_download(request, doc_id):
         return _deny("Management role denied")
     if not _can_access_patient(role, request.user, doc.patient):
         return _deny("RBAC denied")
+
+    # Doctors additionally require patient consent for document access.
+    if role == Role.DOCTOR and not _has_consent(doc.patient, request.user, ConsentPurpose.ACCESS_DOCUMENTS):
+        return _deny("No access_documents consent")
 
     # Serve the file
     file_path = doc.stored_file.path
@@ -882,6 +915,17 @@ def generate_patient_report(request, patient_id):
                          resource_id=patient_id, reason="Doctor not assigned")
             messages.error(request, "You are not authorised to generate a report for this patient.")
             return redirect("core:patient_list")
+        # Assigned doctors additionally require patient consent.
+        if not _has_consent(profile, request.user, ConsentPurpose.GENERATE_REPORT):
+            AuditLog.log(action="report_generate", outcome=AuditOutcome.DENIED,
+                         user=request.user, resource_type="PatientProfile",
+                         resource_id=patient_id, reason="No generate_report consent")
+            messages.error(
+                request,
+                "You do not have the patient's consent to generate a report. "
+                "The patient must grant 'Generate Patient PDF Report' consent first."
+            )
+            return redirect("core:patient_detail", patient_id=patient_id)
     elif role == Role.PATIENT:
         try:
             own = request.user.patient_profile
@@ -921,3 +965,259 @@ def generate_patient_report(request, patient_id):
     response = HttpResponse(pdf_bytes, content_type="application/pdf")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
+
+
+# ── Consent management ────────────────────────────────────────────────────────
+
+def consent_manage(request, patient_id):
+    """
+    Display and manage consent grants for a patient's record.
+
+    Access:
+      - Patient: own record only – may view, grant, revoke.
+      - Admin:   may view (read-only).
+      - Others:  denied.
+    """
+    redir = _require_auth(request)
+    if redir:
+        return redir
+
+    role    = _get_role(request.user)
+    profile = get_object_or_404(PatientProfile, patient_id=patient_id)
+
+    # Authorisation: patients (own) and admins may view.
+    if role == Role.PATIENT:
+        try:
+            own = request.user.patient_profile
+        except PatientProfile.DoesNotExist:
+            messages.error(request, "No patient record associated with your account.")
+            return redirect("core:dashboard")
+        if own.pk != profile.pk:
+            AuditLog.log(action="consent_view", outcome=AuditOutcome.DENIED,
+                         user=request.user, resource_type="PatientProfile",
+                         resource_id=patient_id, reason="Patient accessing other record")
+            messages.error(request, "You can only manage consent for your own record.")
+            return redirect("core:dashboard")
+    elif role == Role.ADMIN:
+        pass  # Admin may view all consent records.
+    else:
+        AuditLog.log(action="consent_view", outcome=AuditOutcome.DENIED,
+                     user=request.user, resource_type="PatientProfile",
+                     resource_id=patient_id, reason=f"Role '{role}' not permitted")
+        messages.error(request, "You do not have permission to view consent records.")
+        return redirect("core:dashboard")
+
+    grants      = profile.consent_grants.select_related("grantee").all()
+    active      = grants.filter(status=ConsentStatus.GRANTED)
+    revoked     = grants.filter(status=ConsentStatus.REVOKED)
+    grant_form  = ConsentGrantForm() if role == Role.PATIENT else None
+    is_patient  = role == Role.PATIENT
+
+    AuditLog.log(action="consent_view", outcome=AuditOutcome.SUCCESS,
+                 user=request.user, resource_type="PatientProfile", resource_id=patient_id)
+
+    ctx = {
+        "profile":    profile,
+        "active":     active,
+        "revoked":    revoked,
+        "grant_form": grant_form,
+        "is_patient": is_patient,
+        "role":       role,
+        "ConsentPurpose": ConsentPurpose,
+    }
+    return render(request, "core/consent_manage.html", ctx)
+
+
+def consent_grant(request, patient_id):
+    """
+    POST only. Patient grants new consent to a doctor for one purpose.
+    If an active grant for the same (patient, grantee, purpose) already exists,
+    the request is silently treated as a no-op (idempotent).
+    """
+    redir = _require_auth(request)
+    if redir:
+        return redir
+
+    role    = _get_role(request.user)
+    profile = get_object_or_404(PatientProfile, patient_id=patient_id)
+
+    # Only the patient (for their own record) may grant consent.
+    if role != Role.PATIENT:
+        messages.error(request, "Only patients can grant consent.")
+        return redirect("core:dashboard")
+
+    try:
+        own = request.user.patient_profile
+    except PatientProfile.DoesNotExist:
+        messages.error(request, "No patient record associated with your account.")
+        return redirect("core:dashboard")
+
+    if own.pk != profile.pk:
+        AuditLog.log(action="consent_grant", outcome=AuditOutcome.DENIED,
+                     user=request.user, resource_type="PatientProfile",
+                     resource_id=patient_id, reason="Patient accessing other record")
+        messages.error(request, "You can only grant consent for your own record.")
+        return redirect("core:dashboard")
+
+    if request.method != "POST":
+        return redirect("core:consent_manage", patient_id=patient_id)
+
+    form = ConsentGrantForm(request.POST)
+    if not form.is_valid():
+        # Re-render manage page with form errors
+        grants     = profile.consent_grants.select_related("grantee").all()
+        active     = grants.filter(status=ConsentStatus.GRANTED)
+        revoked    = grants.filter(status=ConsentStatus.REVOKED)
+        ctx = {
+            "profile":    profile,
+            "active":     active,
+            "revoked":    revoked,
+            "grant_form": form,
+            "is_patient": True,
+            "role":       role,
+            "ConsentPurpose": ConsentPurpose,
+        }
+        return render(request, "core/consent_manage.html", ctx)
+
+    grantee = form.get_grantee()
+    purpose = form.cleaned_data["purpose"]
+    notes   = form.cleaned_data.get("notes", "")
+
+    # Idempotent: if an active grant already exists, just inform the patient.
+    existing = ConsentGrant.objects.filter(
+        patient=profile,
+        grantee=grantee,
+        purpose=purpose,
+        status=ConsentStatus.GRANTED,
+    ).first()
+    if existing:
+        messages.info(
+            request,
+            f"An active consent for '{existing.get_purpose_display()}' already exists for {grantee.get_full_name() or grantee.username}."
+        )
+        return redirect("core:consent_manage", patient_id=patient_id)
+
+    grant = ConsentGrant.objects.create(
+        patient=profile,
+        grantee=grantee,
+        purpose=purpose,
+        status=ConsentStatus.GRANTED,
+        notes=notes,
+    )
+    ConsentEvent.objects.create(
+        grant=grant,
+        action=ConsentEvent.ACTION_GRANTED,
+        actor=request.user,
+        reason=notes[:255] if notes else "",
+    )
+    AuditLog.log(action="consent_grant", outcome=AuditOutcome.SUCCESS,
+                 user=request.user, resource_type="ConsentGrant",
+                 resource_id=grant.pk,
+                 reason=f"Purpose: {purpose} → {grantee.username}")
+    messages.success(
+        request,
+        f"Consent granted to {grantee.get_full_name() or grantee.username} "
+        f"for '{grant.get_purpose_display()}'."
+    )
+    return redirect("core:consent_manage", patient_id=patient_id)
+
+
+def consent_revoke(request, grant_id):
+    """
+    POST only. Patient revokes an existing active consent grant.
+    Appends a ConsentEvent; the ConsentGrant record is preserved.
+    """
+    redir = _require_auth(request)
+    if redir:
+        return redir
+
+    role  = _get_role(request.user)
+    grant = get_object_or_404(ConsentGrant, pk=grant_id)
+
+    # Only the patient whose record this belongs to may revoke.
+    if role != Role.PATIENT:
+        messages.error(request, "Only patients can revoke their own consent.")
+        return redirect("core:dashboard")
+
+    try:
+        own = request.user.patient_profile
+    except PatientProfile.DoesNotExist:
+        messages.error(request, "No patient record associated with your account.")
+        return redirect("core:dashboard")
+
+    if own.pk != grant.patient.pk:
+        AuditLog.log(action="consent_revoke", outcome=AuditOutcome.DENIED,
+                     user=request.user, resource_type="ConsentGrant",
+                     resource_id=grant_id, reason="Patient revoking other patient's consent")
+        messages.error(request, "You can only revoke consent for your own record.")
+        return redirect("core:dashboard")
+
+    if request.method != "POST":
+        return redirect("core:consent_manage", patient_id=grant.patient.patient_id)
+
+    if grant.status == ConsentStatus.REVOKED:
+        messages.info(request, "That consent grant was already revoked.")
+        return redirect("core:consent_manage", patient_id=grant.patient.patient_id)
+
+    grant.status     = ConsentStatus.REVOKED
+    grant.revoked_at = timezone.now()
+    grant.save(update_fields=["status", "revoked_at", "updated_at"])
+
+    ConsentEvent.objects.create(
+        grant=grant,
+        action=ConsentEvent.ACTION_REVOKED,
+        actor=request.user,
+    )
+    AuditLog.log(action="consent_revoke", outcome=AuditOutcome.SUCCESS,
+                 user=request.user, resource_type="ConsentGrant",
+                 resource_id=grant_id,
+                 reason=f"Purpose: {grant.purpose} revoked from {grant.grantee.username}")
+    messages.success(
+        request,
+        f"Consent for '{grant.get_purpose_display()}' revoked from "
+        f"{grant.grantee.get_full_name() or grant.grantee.username}."
+    )
+    return redirect("core:consent_manage", patient_id=grant.patient.patient_id)
+
+
+def consent_history(request, grant_id):
+    """
+    View the full event history for a consent grant.
+    Access: the patient whose record it belongs to, or admin.
+    """
+    redir = _require_auth(request)
+    if redir:
+        return redir
+
+    role  = _get_role(request.user)
+    grant = get_object_or_404(ConsentGrant, pk=grant_id)
+
+    if role == Role.ADMIN:
+        pass
+    elif role == Role.PATIENT:
+        try:
+            own = request.user.patient_profile
+        except PatientProfile.DoesNotExist:
+            messages.error(request, "No patient record associated with your account.")
+            return redirect("core:dashboard")
+        if own.pk != grant.patient.pk:
+            AuditLog.log(action="consent_history_view", outcome=AuditOutcome.DENIED,
+                         user=request.user, resource_type="ConsentGrant",
+                         resource_id=grant_id, reason="Patient viewing other patient's grant history")
+            messages.error(request, "You can only view history for your own consent records.")
+            return redirect("core:dashboard")
+    else:
+        AuditLog.log(action="consent_history_view", outcome=AuditOutcome.DENIED,
+                     user=request.user, resource_type="ConsentGrant",
+                     resource_id=grant_id, reason=f"Role '{role}' not permitted")
+        messages.error(request, "You do not have permission to view consent history.")
+        return redirect("core:dashboard")
+
+    events = grant.events.select_related("actor").all()
+    ctx = {
+        "grant":  grant,
+        "events": events,
+        "role":   role,
+    }
+    return render(request, "core/consent_history.html", ctx)
+

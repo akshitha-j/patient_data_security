@@ -404,6 +404,13 @@ class DocumentUploadTests(TestCase):
         self.pat_user = make_user("up_pat", "uppat@test.demo", Role.PATIENT)
         self.patient = make_patient(self.pat_user, "P-UP-001", doctor=self.doc1)
 
+        # Grant doc1 consent to access documents so document_list post-upload redirect succeeds
+        from .models import ConsentGrant, ConsentPurpose, ConsentStatus
+        ConsentGrant.objects.create(
+            patient=self.patient, grantee=self.doc1,
+            purpose=ConsentPurpose.ACCESS_DOCUMENTS, status=ConsentStatus.GRANTED,
+        )
+
     def tearDown(self):
         self.settings_override.disable()
         shutil.rmtree(self.temp_media, ignore_errors=True)
@@ -527,6 +534,13 @@ class DocumentAccessAndDownloadTests(TestCase):
             stored_file=pdf,
             doc_type="lab_result",
             file_size_bytes=len(b"%PDF-1.4 sample content"),
+        )
+
+        # Grant doc1 consent to access documents (required by consent enforcement)
+        from .models import ConsentGrant, ConsentPurpose, ConsentStatus
+        ConsentGrant.objects.create(
+            patient=self.pat1, grantee=self.doc1,
+            purpose=ConsentPurpose.ACCESS_DOCUMENTS, status=ConsentStatus.GRANTED,
         )
 
     def tearDown(self):
@@ -851,6 +865,12 @@ class PatientPDFReportTests(TestCase):
             assigned_doctor=None,
         )
 
+        from .models import ConsentGrant, ConsentPurpose, ConsentStatus
+        ConsentGrant.objects.create(
+            patient=self.pat1, grantee=self.doc1,
+            purpose=ConsentPurpose.GENERATE_REPORT, status=ConsentStatus.GRANTED,
+        )
+
     def _url(self, pid):
         return reverse("core:patient_report", kwargs={"patient_id": pid})
 
@@ -1022,3 +1042,291 @@ class PatientPDFReportTests(TestCase):
         self.client.force_login(self.admin)
         resp = self.client.get(self._url("RPT-9999"))
         self.assertEqual(resp.status_code, 404)
+
+
+# =============================================================================
+# Consent Management Tests
+# =============================================================================
+
+from .models import ConsentGrant, ConsentEvent, ConsentPurpose, ConsentStatus
+
+
+def make_consent(patient_profile, grantee_user, purpose, status=ConsentStatus.GRANTED):
+    """Helper: create a ConsentGrant (+ initial ConsentEvent) for testing."""
+    grant = ConsentGrant.objects.create(
+        patient=patient_profile,
+        grantee=grantee_user,
+        purpose=purpose,
+        status=status,
+    )
+    action = ConsentEvent.ACTION_GRANTED if status == ConsentStatus.GRANTED else ConsentEvent.ACTION_REVOKED
+    ConsentEvent.objects.create(grant=grant, action=action, actor=patient_profile.patient_user)
+    return grant
+
+
+class ConsentModelTests(TestCase):
+    """Unit tests for ConsentGrant and ConsentEvent model semantics."""
+
+    def setUp(self):
+        self.doctor  = make_user("cm_doc",  "cm_doc@t.demo",  Role.DOCTOR,  "Doc", "CM")
+        self.patu    = make_user("cm_pat",  "cm_pat@t.demo",  Role.PATIENT, "Pat", "CM")
+        self.patient = make_patient(self.patu, "CM-0001", doctor=self.doctor)
+
+    def test_consent_grant_str(self):
+        grant = ConsentGrant.objects.create(
+            patient=self.patient, grantee=self.doctor,
+            purpose=ConsentPurpose.ACCESS_DOCUMENTS, status=ConsentStatus.GRANTED,
+        )
+        self.assertIn("CM-0001", str(grant))
+        self.assertIn("cm_doc", str(grant))
+
+    def test_is_active_property(self):
+        grant = ConsentGrant.objects.create(
+            patient=self.patient, grantee=self.doctor,
+            purpose=ConsentPurpose.ACCESS_DOCUMENTS, status=ConsentStatus.GRANTED,
+        )
+        self.assertTrue(grant.is_active)
+        grant.status = ConsentStatus.REVOKED
+        grant.save()
+        self.assertFalse(grant.is_active)
+
+    def test_consent_event_str(self):
+        grant = ConsentGrant.objects.create(
+            patient=self.patient, grantee=self.doctor,
+            purpose=ConsentPurpose.GENERATE_REPORT, status=ConsentStatus.GRANTED,
+        )
+        ev = ConsentEvent.objects.create(grant=grant, action=ConsentEvent.ACTION_GRANTED, actor=self.doctor)
+        self.assertIn("granted", str(ev))
+
+    def test_multiple_purposes_independent(self):
+        """Separate grants for each purpose are independent."""
+        g1 = ConsentGrant.objects.create(
+            patient=self.patient, grantee=self.doctor,
+            purpose=ConsentPurpose.ACCESS_DOCUMENTS, status=ConsentStatus.GRANTED,
+        )
+        g2 = ConsentGrant.objects.create(
+            patient=self.patient, grantee=self.doctor,
+            purpose=ConsentPurpose.GENERATE_REPORT, status=ConsentStatus.GRANTED,
+        )
+        self.assertNotEqual(g1.pk, g2.pk)
+
+
+class ConsentManagementViewTests(TestCase):
+    """Tests for consent_manage, consent_grant, consent_revoke, consent_history views."""
+
+    def setUp(self):
+        self.client  = Client()
+        self.admin   = make_user("cv_admin", "cv_admin@t.demo",  Role.ADMIN,      "Admin", "CV")
+        self.doctor1 = make_user("cv_doc1",  "cv_doc1@t.demo",   Role.DOCTOR,     "Doc",   "One")
+        self.doctor2 = make_user("cv_doc2",  "cv_doc2@t.demo",   Role.DOCTOR,     "Doc",   "Two")
+        self.mgmt    = make_user("cv_mgmt",  "cv_mgmt@t.demo",   Role.MANAGEMENT, "Mgmt",  "CV")
+        self.patu    = make_user("cv_pat",   "cv_pat@t.demo",    Role.PATIENT,    "Pat",   "CV")
+        self.pat2u   = make_user("cv_pat2",  "cv_pat2@t.demo",   Role.PATIENT,    "Pat",   "Two")
+        self.patient  = make_patient(self.patu,  "CV-0001", doctor=self.doctor1)
+        self.patient2 = make_patient(self.pat2u, "CV-0002", doctor=self.doctor2)
+
+    # ── Test 1: Patient can view own consent page ──────────────────────────────
+    def test_patient_can_view_own_consent_page(self):
+        self.client.force_login(self.patu)
+        resp = self.client.get(reverse("core:consent_manage", kwargs={"patient_id": "CV-0001"}))
+        self.assertEqual(resp.status_code, 200)
+        self.assertTemplateUsed(resp, "core/consent_manage.html")
+
+    # ── Test 2: Patient cannot view another patient's consent page ─────────────
+    def test_patient_denied_other_patient_consent(self):
+        self.client.force_login(self.patu)
+        resp = self.client.get(reverse("core:consent_manage", kwargs={"patient_id": "CV-0002"}))
+        self.assertRedirects(resp, reverse("core:dashboard"))
+
+    # ── Test 3: Admin can view any consent page ────────────────────────────────
+    def test_admin_can_view_any_consent_page(self):
+        self.client.force_login(self.admin)
+        resp = self.client.get(reverse("core:consent_manage", kwargs={"patient_id": "CV-0001"}))
+        self.assertEqual(resp.status_code, 200)
+
+    # ── Test 4: Non-patient, non-admin roles are denied ────────────────────────
+    def test_doctor_denied_consent_page(self):
+        self.client.force_login(self.doctor1)
+        resp = self.client.get(reverse("core:consent_manage", kwargs={"patient_id": "CV-0001"}))
+        self.assertRedirects(resp, reverse("core:dashboard"))
+
+    def test_management_denied_consent_page(self):
+        self.client.force_login(self.mgmt)
+        resp = self.client.get(reverse("core:consent_manage", kwargs={"patient_id": "CV-0001"}))
+        self.assertRedirects(resp, reverse("core:dashboard"))
+
+    # ── Test 5: Patient can grant consent to their assigned doctor ─────────────
+    def test_patient_can_grant_consent(self):
+        self.client.force_login(self.patu)
+        resp = self.client.post(
+            reverse("core:consent_grant", kwargs={"patient_id": "CV-0001"}),
+            {
+                "grantee_email": "cv_doc1@t.demo",
+                "purpose": ConsentPurpose.ACCESS_DOCUMENTS,
+                "notes": "Test grant",
+            },
+        )
+        self.assertRedirects(resp, reverse("core:consent_manage", kwargs={"patient_id": "CV-0001"}))
+        self.assertTrue(
+            ConsentGrant.objects.filter(
+                patient=self.patient, grantee=self.doctor1,
+                purpose=ConsentPurpose.ACCESS_DOCUMENTS, status=ConsentStatus.GRANTED,
+            ).exists()
+        )
+
+    # ── Test 6: Granting consent creates a ConsentEvent ───────────────────────
+    def test_grant_creates_consent_event(self):
+        self.client.force_login(self.patu)
+        self.client.post(
+            reverse("core:consent_grant", kwargs={"patient_id": "CV-0001"}),
+            {"grantee_email": "cv_doc1@t.demo", "purpose": ConsentPurpose.GENERATE_REPORT, "notes": ""},
+        )
+        grant = ConsentGrant.objects.get(
+            patient=self.patient, grantee=self.doctor1, purpose=ConsentPurpose.GENERATE_REPORT
+        )
+        self.assertTrue(grant.events.filter(action=ConsentEvent.ACTION_GRANTED).exists())
+
+    # ── Test 7: Patient cannot grant consent for another patient ───────────────
+    def test_patient_cannot_grant_consent_for_other_patient(self):
+        self.client.force_login(self.patu)
+        resp = self.client.post(
+            reverse("core:consent_grant", kwargs={"patient_id": "CV-0002"}),
+            {"grantee_email": "cv_doc1@t.demo", "purpose": ConsentPurpose.ACCESS_DOCUMENTS, "notes": ""},
+        )
+        self.assertRedirects(resp, reverse("core:dashboard"))
+        self.assertFalse(ConsentGrant.objects.filter(patient=self.patient2).exists())
+
+    # ── Test 8: Consent form rejects non-doctor emails ────────────────────────
+    def test_grant_rejects_non_doctor_email(self):
+        self.client.force_login(self.patu)
+        resp = self.client.post(
+            reverse("core:consent_grant", kwargs={"patient_id": "CV-0001"}),
+            {"grantee_email": "cv_admin@t.demo", "purpose": ConsentPurpose.ACCESS_DOCUMENTS, "notes": ""},
+        )
+        # Should re-render the form with an error, not redirect
+        self.assertEqual(resp.status_code, 200)
+        self.assertTemplateUsed(resp, "core/consent_manage.html")
+
+    # ── Test 9: Patient can revoke an active consent ───────────────────────────
+    def test_patient_can_revoke_consent(self):
+        grant = make_consent(self.patient, self.doctor1, ConsentPurpose.ACCESS_DOCUMENTS)
+        self.client.force_login(self.patu)
+        resp = self.client.post(
+            reverse("core:consent_revoke", kwargs={"grant_id": grant.pk})
+        )
+        self.assertRedirects(resp, reverse("core:consent_manage", kwargs={"patient_id": "CV-0001"}))
+        grant.refresh_from_db()
+        self.assertEqual(grant.status, ConsentStatus.REVOKED)
+        self.assertIsNotNone(grant.revoked_at)
+
+    # ── Test 10: Revoking consent creates a ConsentEvent ──────────────────────
+    def test_revoke_creates_consent_event(self):
+        grant = make_consent(self.patient, self.doctor1, ConsentPurpose.ACCESS_DOCUMENTS)
+        self.client.force_login(self.patu)
+        self.client.post(reverse("core:consent_revoke", kwargs={"grant_id": grant.pk}))
+        self.assertTrue(grant.events.filter(action=ConsentEvent.ACTION_REVOKED).exists())
+
+    # ── Test 11: Patient cannot revoke another patient's consent ───────────────
+    def test_patient_cannot_revoke_other_patients_consent(self):
+        grant = make_consent(self.patient2, self.doctor2, ConsentPurpose.ACCESS_DOCUMENTS)
+        self.client.force_login(self.patu)
+        resp = self.client.post(reverse("core:consent_revoke", kwargs={"grant_id": grant.pk}))
+        self.assertRedirects(resp, reverse("core:dashboard"))
+        grant.refresh_from_db()
+        self.assertEqual(grant.status, ConsentStatus.GRANTED)  # unchanged
+
+    # ── Test 12: Doctor document access blocked without consent ───────────────
+    def test_doctor_blocked_doc_list_without_consent(self):
+        """Assigned doctor cannot list documents without access_documents consent."""
+        self.client.force_login(self.doctor1)
+        resp = self.client.get(
+            reverse("core:document_list", kwargs={"patient_id": "CV-0001"})
+        )
+        # Should be redirected (denied) rather than showing the document list
+        self.assertNotEqual(resp.status_code, 200)
+
+    # ── Test 13: Doctor document access allowed with consent ──────────────────
+    def test_doctor_allowed_doc_list_with_consent(self):
+        """Assigned doctor can list documents once access_documents consent is active."""
+        make_consent(self.patient, self.doctor1, ConsentPurpose.ACCESS_DOCUMENTS)
+        self.client.force_login(self.doctor1)
+        resp = self.client.get(
+            reverse("core:document_list", kwargs={"patient_id": "CV-0001"})
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    # ── Test 14: Doctor report blocked without consent ────────────────────────
+    def test_doctor_blocked_report_without_consent(self):
+        """Assigned doctor cannot generate a report without generate_report consent."""
+        self.client.force_login(self.doctor1)
+        resp = self.client.get(
+            reverse("core:patient_report", kwargs={"patient_id": "CV-0001"})
+        )
+        self.assertNotEqual(resp.status_code, 200)
+
+    # ── Test 15: Admin is not gated by consent for doc access ─────────────────
+    def test_admin_not_gated_by_consent_for_doc_list(self):
+        """Admin can list documents regardless of consent records."""
+        # No consent granted – admin should still reach the page
+        self.client.force_login(self.admin)
+        resp = self.client.get(
+            reverse("core:document_list", kwargs={"patient_id": "CV-0001"})
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    # ── Test 16: Consent history view accessible by patient and admin ──────────
+    def test_consent_history_accessible(self):
+        grant = make_consent(self.patient, self.doctor1, ConsentPurpose.ACCESS_DOCUMENTS)
+        for user in (self.patu, self.admin):
+            self.client.force_login(user)
+            resp = self.client.get(
+                reverse("core:consent_history", kwargs={"grant_id": grant.pk})
+            )
+            self.assertEqual(resp.status_code, 200)
+            self.assertTemplateUsed(resp, "core/consent_history.html")
+
+    # ── Test 17: Consent history denied to unrelated users ────────────────────
+    def test_consent_history_denied_to_unrelated_roles(self):
+        grant = make_consent(self.patient, self.doctor1, ConsentPurpose.ACCESS_DOCUMENTS)
+        for user in (self.doctor1, self.mgmt):
+            self.client.force_login(user)
+            resp = self.client.get(
+                reverse("core:consent_history", kwargs={"grant_id": grant.pk})
+            )
+            self.assertRedirects(resp, reverse("core:dashboard"),
+                                 msg_prefix=f"User {user.username} should be denied")
+        # Other patient denied
+        self.client.force_login(self.pat2u)
+        resp = self.client.get(
+            reverse("core:consent_history", kwargs={"grant_id": grant.pk})
+        )
+        self.assertRedirects(resp, reverse("core:dashboard"))
+
+    # ── Test 18: Idempotent grant (duplicate active grant silently skipped) ────
+    def test_duplicate_active_grant_is_idempotent(self):
+        make_consent(self.patient, self.doctor1, ConsentPurpose.ACCESS_DOCUMENTS)
+        self.client.force_login(self.patu)
+        self.client.post(
+            reverse("core:consent_grant", kwargs={"patient_id": "CV-0001"}),
+            {"grantee_email": "cv_doc1@t.demo", "purpose": ConsentPurpose.ACCESS_DOCUMENTS, "notes": ""},
+        )
+        # Should still be exactly one active grant
+        count = ConsentGrant.objects.filter(
+            patient=self.patient, grantee=self.doctor1,
+            purpose=ConsentPurpose.ACCESS_DOCUMENTS, status=ConsentStatus.GRANTED,
+        ).count()
+        self.assertEqual(count, 1)
+
+    # ── Test 19: Audit log entries created for grant and revoke ───────────────
+    def test_consent_grant_revoke_audit_logged(self):
+        self.client.force_login(self.patu)
+        self.client.post(
+            reverse("core:consent_grant", kwargs={"patient_id": "CV-0001"}),
+            {"grantee_email": "cv_doc1@t.demo", "purpose": ConsentPurpose.GENERATE_REPORT, "notes": ""},
+        )
+        self.assertTrue(AuditLog.objects.filter(action="consent_grant", outcome=AuditOutcome.SUCCESS).exists())
+
+        grant = ConsentGrant.objects.get(patient=self.patient, grantee=self.doctor1)
+        self.client.post(reverse("core:consent_revoke", kwargs={"grant_id": grant.pk}))
+        self.assertTrue(AuditLog.objects.filter(action="consent_revoke", outcome=AuditOutcome.SUCCESS).exists())
+

@@ -369,3 +369,95 @@ class AuditLog(models.Model):
             )
         except Exception:
             return None  # silently swallow to avoid breaking caller
+
+
+# ── Patient consent ────────────────────────────────────────────────────────────
+
+class ConsentPurpose(models.TextChoices):
+    VIEW_RECORD       = "view_record",      "View Patient Medical Record"
+    ACCESS_DOCUMENTS  = "access_documents", "Access Patient Documents"
+    GENERATE_REPORT   = "generate_report",  "Generate Patient PDF Report"
+
+
+class ConsentStatus(models.TextChoices):
+    GRANTED = "granted", "Granted"
+    REVOKED = "revoked", "Revoked"
+
+
+class ConsentGrant(models.Model):
+    """
+    A patient grants a specific grantee (typically a doctor) permission to
+    perform one well-defined action (purpose) on their record.
+
+    Records are NEVER deleted. Revocation flips the status field and appends
+    a ConsentEvent; history is preserved in the append-only ConsentEvent log.
+    """
+
+    patient    = models.ForeignKey(
+        PatientProfile, on_delete=models.CASCADE, related_name="consent_grants"
+    )
+    grantee    = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="received_consents",
+        help_text="User (typically a doctor) receiving the consent."
+    )
+    purpose    = models.CharField(
+        max_length=30, choices=ConsentPurpose.choices, db_index=True
+    )
+    status     = models.CharField(
+        max_length=10, choices=ConsentStatus.choices,
+        default=ConsentStatus.GRANTED, db_index=True
+    )
+    notes      = models.CharField(max_length=500, blank=True)
+    granted_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Consent Grant"
+        ordering = ["-granted_at"]
+
+    def __str__(self):
+        return (
+            f"Consent #{self.pk}: {self.patient.patient_id} → "
+            f"{self.grantee.username} [{self.purpose}] [{self.status}]"
+        )
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == ConsentStatus.GRANTED
+
+
+class ConsentEvent(models.Model):
+    """
+    Append-only audit trail for consent decisions. Never updated or deleted.
+    """
+
+    ACTION_GRANTED = "granted"
+    ACTION_REVOKED = "revoked"
+    ACTION_RENEWED = "renewed"
+    ACTION_CHOICES = [
+        (ACTION_GRANTED, "Granted"),
+        (ACTION_REVOKED, "Revoked"),
+        (ACTION_RENEWED, "Renewed"),
+    ]
+
+    grant     = models.ForeignKey(
+        ConsentGrant, on_delete=models.CASCADE, related_name="events"
+    )
+    action    = models.CharField(max_length=10, choices=ACTION_CHOICES)
+    actor     = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="consent_events_acted",
+        help_text="The user who performed this action (usually the patient)."
+    )
+    timestamp = models.DateTimeField(auto_now_add=True)
+    reason    = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        verbose_name = "Consent Event"
+        ordering = ["-timestamp"]
+
+    def __str__(self):
+        who = self.actor.username if self.actor else "system"
+        return f"ConsentEvent #{self.pk}: {self.action} by {who} at {self.timestamp:%Y-%m-%d %H:%M}"
+

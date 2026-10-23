@@ -11,7 +11,7 @@ from django import forms
 from django.conf import settings
 from django.contrib.auth.models import User
 
-from .models import DOC_TYPE_CHOICES, MedicalDocument
+from .models import DOC_TYPE_CHOICES, ConsentPurpose, MedicalDocument
 
 
 # ── Document upload ───────────────────────────────────────────────────────────
@@ -92,3 +92,58 @@ class ShareDocumentForm(forms.Form):
 
     def get_recipient(self) -> User:
         return getattr(self, "_recipient_user", None)
+
+
+# ── Consent grant ─────────────────────────────────────────────────────────────
+
+class ConsentGrantForm(forms.Form):
+    """
+    A patient grants consent to a specific doctor for one defined purpose.
+
+    grantee_email – must resolve to a user with role=doctor.
+    purpose       – one of ConsentPurpose choices.
+    notes         – optional free-text explanation.
+    """
+
+    grantee_email = forms.EmailField(
+        label="Doctor Email",
+        help_text="Email address of the doctor to whom you are granting access.",
+        widget=forms.EmailInput(attrs={
+            "class": "form-control",
+            "placeholder": "doctor@securehealth.demo",
+        }),
+    )
+    purpose = forms.ChoiceField(
+        label="Access Purpose",
+        choices=ConsentPurpose.choices,
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
+    notes = forms.CharField(
+        label="Notes (optional)",
+        max_length=500,
+        required=False,
+        widget=forms.Textarea(attrs={
+            "class": "form-control",
+            "rows": 2,
+            "placeholder": "Optional: reason or context for this consent.",
+        }),
+    )
+
+    def clean_grantee_email(self):
+        from .models import Role, UserProfile
+        email = self.cleaned_data.get("grantee_email", "").strip().lower()
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            raise forms.ValidationError("No registered user found with that email address.")
+        try:
+            profile = user.profile
+        except UserProfile.DoesNotExist:
+            raise forms.ValidationError("That user does not have an application role.")
+        if profile.role != Role.DOCTOR:
+            raise forms.ValidationError("Consent can only be granted to users with the Doctor role.")
+        self._grantee_user = user
+        return email
+
+    def get_grantee(self) -> User:
+        return getattr(self, "_grantee_user", None)

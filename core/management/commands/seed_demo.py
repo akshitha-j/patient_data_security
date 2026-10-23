@@ -16,7 +16,10 @@ from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand
 
-from core.models import MedicalDocument, OTPToken, PatientProfile, Role, UserProfile
+from core.models import (
+    ConsentEvent, ConsentGrant, ConsentPurpose, ConsentStatus,
+    MedicalDocument, OTPToken, PatientProfile, Role, UserProfile,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -214,6 +217,33 @@ class Command(BaseCommand):
             safe_name = f"demo_{display_name[:20].replace(' ', '_').lower()}.pdf"
             doc.stored_file.save(safe_name, ContentFile(pdf_bytes), save=True)
             self.stdout.write(f"    Created doc: {display_name}")
+
+        # ── Create demo consents ──────────────────────────────────────────
+        self.stdout.write("  Seeding demo consents…")
+        # Chris Blake (patient1) grants access to Dr. Sam Carter (doctor1)
+        pat1 = created_patients.get("patient_blake")
+        doc1 = created_users.get("dr_carter")
+        if pat1 and doc1:
+            for purpose, note in [
+                (ConsentPurpose.ACCESS_DOCUMENTS, "Routine lab and document monitoring"),
+                (ConsentPurpose.GENERATE_REPORT, "Summary report for annual health review"),
+            ]:
+                cg, created = ConsentGrant.objects.get_or_create(
+                    patient=pat1,
+                    grantee=doc1,
+                    purpose=purpose,
+                    defaults={"status": ConsentStatus.GRANTED, "notes": note},
+                )
+                if created:
+                    ConsentEvent.objects.create(
+                        grant=cg,
+                        action=ConsentEvent.ACTION_GRANTED,
+                        actor=pat1.patient_user,
+                        reason=note,
+                    )
+                    self.stdout.write(f"    Created consent: {purpose} for {doc1.username}")
+                else:
+                    self.stdout.write(f"    Exists  consent: {purpose} for {doc1.username}")
 
         self.stdout.write(self.style.SUCCESS("\nDemo data ready.\n"))
         self.stdout.write("Demo accounts (use email + OTP at /login/):")

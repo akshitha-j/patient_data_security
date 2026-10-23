@@ -2,263 +2,282 @@
 
 **Cybersecurity Framework for Secure Patient Data Transmission in Healthcare Networks**
 
-An academic prototype demonstrating core cybersecurity concepts for healthcare
-data management. Built with Django 5.2, SQLite, and Bootstrap 5.
+An academic research prototype demonstrating core cybersecurity concepts for healthcare
+data management: multi-factor authentication (mock OTP), role-based access control (RBAC),
+private medical document uploads, OTP-protected document sharing, on-demand PDF report generation,
+and fine-grained patient consent management. Built with Django 5.2, SQLite, and Bootstrap 5.
 
-> **⚠ PROTOTYPE DISCLAIMER**  
-> All patient records, documents, and user accounts are entirely fictional.  
-> This system is **not** suitable for real clinical use, HIPAA compliance,
-> production deployment, or any actual healthcare application.
+> [!WARNING]
+> **PROTOTYPE DISCLAIMER**  
+> All patient records, clinical measurements, medical histories, documents, and user accounts in this system are **entirely fictional**.  
+> This system is strictly an academic research prototype. It is **not** suitable for real clinical use, HIPAA/GDPR compliance certification, production deployment, or any actual healthcare application.
+
+---
+
+## Technical Documentation Manual
+
+For the complete technical architecture, sequence flows, ER diagram, threat model, testing breakdown, and maintenance guide, see the comprehensive manual:
+
+📖 **[Technical Documentation Manual](docs/TECHNICAL_MANUAL.md)**
 
 ---
 
 ## Technology Stack
 
-| Layer        | Technology                                              |
-|--------------|---------------------------------------------------------|
-| Backend      | Python 3.12+, Django 5.2                               |
-| Database     | SQLite (local file `db.sqlite3`)                        |
-| Frontend     | Django Templates, Bootstrap 5.3, Bootstrap Icons        |
-| Auth         | Mock OTP (SHA-256 hashed, session-based)               |
-| PDF reports  | ReportLab 4.2.5                                         |
-| Static files | WhiteNoise 6.9                                          |
+| Layer | Technology |
+| :--- | :--- |
+| **Backend** | Python 3.12+, Django 5.2 |
+| **Database** | SQLite (local file `db.sqlite3` with WAL mode) |
+| **Frontend** | Django Templates, Bootstrap 5.3.3, Bootstrap Icons 1.11.3 |
+| **Authentication** | Email-driven mock OTP (SHA-256 hashed, session-based) |
+| **PDF Reports** | ReportLab 4.2.5+ (in-memory streaming generation) |
+| **Static Serving** | WhiteNoise 6.9 |
 
 ---
 
 ## Implemented Features
 
 ### Phase 1 — Project Foundation
-- Django project structure with SQLite
-- Bootstrap 5 UI with custom CSS
-- Public home page and navigation bar
+- Django project structure with SQLite configuration
+- Responsive Bootstrap 5 UI with navigation bar and custom healthcare CSS styling
+- Public home landing page and clear prototype warning disclaimers
 
 ### Phase 2 — Authentication & Role-Based Access Control
-- **Mock OTP login** — email entry → 6-digit code shown on screen → session
-- Four roles: **Admin**, **Doctor**, **Management**, **Patient**
-- Role-specific dashboards
-- Patient record list and detail views with RBAC enforcement
-- Audit logging for access attempts
+- **Mock OTP Login** — email entry → 6-digit cryptographic code displayed in demo panel → session established
+- Four user roles: **Admin**, **Doctor**, **Management**, **Patient**
+- Role-specific dashboard views
+- Patient directory and detail views with strict server-side RBAC enforcement
+- Application audit logging for all authorization attempts
 
 ### Phase 3 — Medical Documents & Secure Sharing
-- Private medical document uploads (PDF, JPG, PNG; max 5 MB)
-- File extension + magic-byte content validation
-- Authenticated download endpoint (never a public URL)
-- **OTP-protected document sharing** — doctor creates grant → recipient verifies with mock OTP → time-limited access
-- Sharing grant expiry (default 15 minutes)
-- Application-level **audit log** (admin-only view)
+- Private medical document uploads (PDF, JPG, PNG; max 5 MB) stored outside web root in `media_private/`
+- Extension filtering and magic-byte header inspection (protecting against MIME spoofing)
+- Authenticated streaming download endpoint (no direct public media URLs)
+- **OTP-Protected Document Sharing** — doctor creates a grant for a registered recipient → 15-minute expiry → OTP challenge
+- Centralized **Audit Log** interface for administrators with outcome filtering (`SUCCESS`, `DENIED`, `FAILED`, `INFO`)
 
-### Final Phase — PDF Patient Reports
-- On-demand **patient summary PDF** generated with ReportLab
-- Secure branding, demographics, medical history, prototype disclaimer
-- Page numbers in footer
-- Same RBAC as patient detail (Admin, assigned Doctor, own Patient; Management denied)
-- Never stored publicly — generated in memory and returned as download
-- Audit logged on every generation attempt
+### Final Phase — PDF Patient Reports & Consent Management
+- **On-Demand PDF Patient Summaries** — generated in-memory via ReportLab without saving unencrypted files to disk; includes security watermark, patient demographics, allergies, medical history, and disclaimer
+- **Patient Consent Management** — patients hold sovereign control to grant and revoke access to their medical records:
+  - Purpose-specific grants: `view_record`, `access_documents`, `generate_report`
+  - Dynamic authorization gating: assigned doctors require both assignment AND active patient consent to access documents or generate PDF reports
+  - Immediate revocation: revoking consent instantly blocks future clinical access
+  - Append-only event trail: `ConsentEvent` preserves a permanent, chronological decision log
+  - Patient self-service UI and administrator audit view
 
 ---
 
 ## Excluded Features (Not Implemented)
 
-The following are explicitly **not implemented** and should not be claimed as completed:
+The following are explicitly **not implemented** in this academic prototype:
 
-- Real email or SMS delivery (OTPs appear on screen only)
-- End-to-end encryption
-- Tamper-proof or immutable audit logs
-- HIPAA or regulatory compliance
-- Production secrets management
-- Face recognition or biometric authentication
-- Emergency access workflows
-- Consent management
-- External cloud services, Docker, Celery, Redis, PostgreSQL
-- REST API
+- Live email or SMS telecom delivery (OTPs appear in on-screen demonstration panels)
+- End-to-end asymmetric encryption for stored files
+- Hardware-enforced tamper-proof audit logs or HSM integration
+- HIPAA, GDPR, or NHS statutory compliance certification
+- Production secret management (vaults / KMS)
+- Biometric authentication (FIDO2 / WebAuthn)
+- Break-glass or emergency override access workflows
+- External cloud services, Docker containers, Celery, Redis, or PostgreSQL
 
 ---
 
-## Installation
+## Installation and Quick Start
 
 ### 1. Prerequisites
-
 - Python 3.12 or later
 - `git`
 
 ### 2. Clone the repository
-
 ```bash
 git clone https://github.com/Anurag7645/patient_data_security.git
 cd patient_data_security
 ```
 
-### 3. Create and activate a virtual environment
-
+### 3. Create and activate virtual environment
 ```bash
 python3 -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 ```
 
 ### 4. Install dependencies
-
 ```bash
 pip install -r requirements.txt
 ```
 
-Dependencies installed:
-
-- `Django==5.2`
-- `whitenoise==6.9.0`
-- `reportlab==4.2.5`
-- `pillow>=9.0.0`
-- `chardet>=3.0.0`
-
 ### 5. Apply database migrations
-
 ```bash
-python manage.py migrate
+python3 manage.py migrate
 ```
 
-### 6. Seed fictional demo data
-
+### 6. Seed fictional demo data and consents
 ```bash
-python manage.py seed_demo
+python3 manage.py seed_demo
 ```
-
-This creates repeatable fictional accounts and patient records. Safe to rerun.
+*Creates repeatable demonstration user accounts, patient records, demo documents, and sample consent grants. Safe to rerun.*
 
 ### 7. Collect static files
-
 ```bash
-python manage.py collectstatic --noinput
+python3 manage.py collectstatic --noinput
 ```
 
 ### 8. Start the development server
-
 ```bash
-python manage.py runserver
+python3 manage.py runserver
 ```
-
-Open **http://127.0.0.1:8000/** in your browser.
+Navigate to **http://127.0.0.1:8000/** in your browser.
 
 ---
 
 ## Demo Accounts
 
-All accounts use **mock OTP authentication** — no real email is sent.
+All accounts authenticate via **passwordless mock OTP** (no real email sent; code is displayed on the verification screen).
 
-| Email                              | Role       | Notes                        |
-|------------------------------------|------------|------------------------------|
-| `admin@securehealth.demo`          | Admin      | Full access                  |
-| `doctor1@securehealth.demo`        | Doctor     | Assigned: Patient 1 & 2      |
-| `doctor2@securehealth.demo`        | Doctor     | Assigned: Patient 3 & 4      |
-| `management@securehealth.demo`     | Management | Read-only; no medical docs   |
-| `patient1@securehealth.demo`       | Patient    | Chris Blake (SH-P-0001)      |
-| `patient2@securehealth.demo`       | Patient    | Taylor Ford (SH-P-0002)      |
-| `patient3@securehealth.demo`       | Patient    | Morgan Hayes (SH-P-0003)     |
-| `patient4@securehealth.demo`       | Patient    | Jamie Ward (SH-P-0004)       |
-
-### OTP Demonstration Procedure
-
-1. Go to **http://127.0.0.1:8000/login/**
-2. Enter a demo email address and click **Send OTP**.
-3. The page shows a clearly labelled **"DEMO OTP"** panel with the 6-digit code.
-4. Copy the code and click **Verify OTP**.
-5. On success you are redirected to the role-specific dashboard.
-
-OTPs expire after **5 minutes** and are single-use. Up to **5 attempts** are allowed before the token is locked.
-
----
-
-## PDF Report Generation
-
-1. Log in as Admin, an assigned Doctor, or a Patient.
-2. Navigate to any accessible patient's detail page.
-3. Click the **"Generate PDF Report"** button (red outline, PDF icon).
-4. The browser downloads `report_<patient_id>.pdf`.
-
-Management role and unauthenticated users receive a denial. All generation attempts are recorded in the audit log.
+| Email Address | Role | Name / Purpose | Pre-configured Data |
+| :--- | :--- | :--- | :--- |
+| `admin@securehealth.demo` | **Admin** | Alex Morgan | Full access; document vault; system audit log viewer |
+| `doctor1@securehealth.demo` | **Doctor** | Dr. Sam Carter | Assigned to Chris Blake (SH-P-0001) & Taylor Ford (SH-P-0002) |
+| `doctor2@securehealth.demo` | **Doctor** | Dr. Ria Patel | Assigned to Morgan Hayes (SH-P-0003) & Jamie Ward (SH-P-0004) |
+| `management@securehealth.demo`| **Management**| Jordan Chen | Directory inspection; zero access to medical documents or reports |
+| `patient1@securehealth.demo` | **Patient** | Chris Blake | Pre-granted consent for Doctor 1; has uploaded medical documents |
+| `patient2@securehealth.demo` | **Patient** | Taylor Ford | No initial consent granted (use to test consent granting flow) |
+| `patient3@securehealth.demo` | **Patient** | Morgan Hayes | Assigned to Doctor 2 |
+| `patient4@securehealth.demo` | **Patient** | Jamie Ward | Assigned to Doctor 2 |
 
 ---
 
 ## Automated Tests
 
+Run the full automated test suite:
+
 ```bash
-python manage.py test core --verbosity=2
+python3 manage.py test core --verbosity=2
 ```
 
-**Actual test results (last run):**
+### Current Test Suite Status
+```text
+Found 97 test(s).
+Creating test database for alias 'default'...
+System check identified no issues (0 silenced).
+.................................................................................................
+----------------------------------------------------------------------
+Ran 97 tests in ~1.4s
 
-```
-Ran 73 tests in ~1.0s
 OK
+Destroying test database for alias 'default'...
 ```
 
-Test classes:
+### Test Classes and Coverage (97 Tests Total)
 
-| Class | Tests | What is covered |
-|---|---|---|
-| `OTPModelTests` | 7 | Token generation, verification, expiry, reuse, attempt limit |
-| `LoginViewTests` | 4 | Login page, unknown email, OTP panel, session |
-| `VerifyViewTests` | 6 | Correct/wrong/expired/reused OTP, attempt limit |
-| `DashboardRBACTests` | 5 | All four role dashboards + unauthenticated |
-| `PatientListRBACTests` | 5 | List access per role |
-| `PatientDetailRBACTests` | 8 | Detail access per role, 404 |
-| `DocumentUploadTests` | 7 | Upload auth, file validation, size limit |
-| `DocumentAccessAndDownloadTests` | 5 | List + download per role |
-| `OTPProtectedSharingTests` | 5 | Grant creation, OTP verify, expired grant, intruder |
-| `AuditLogTests` | 3 | Admin access, non-admin denial, filtering |
-| `IntegrationAndStartupTests` | 3 | Imports, URL reversal, form validation |
-| `PatientPDFReportTests` | 12 | Admin/doctor/patient access, denial, content-type, filename, PDF content, empty fields, audit |
+| Test Class | Count | Covered Security Behaviors |
+| :--- | :---: | :--- |
+| `OTPModelTests` | 7 | Token generation, cryptographic verification, expiry, single-use, attempts |
+| `LoginViewTests` | 4 | Email submission, unknown emails, demo panel rendering, session initialization |
+| `VerifyViewTests` | 6 | Correct/incorrect/expired/reused OTPs, attempt limits |
+| `DashboardRBACTests` | 5 | Role dashboard isolation for Admin, Doctor, Management, Patient, Anonymous |
+| `PatientListRBACTests` | 5 | Directory access boundaries across all roles |
+| `PatientDetailRBACTests` | 8 | Assigned doctor access, unassigned doctor denial, patient isolation, 404 |
+| `DocumentUploadTests` | 7 | Allowed extensions, magic-byte forgery rejection, 5 MB file size limit, audit |
+| `DocumentAccessAndDownloadTests` | 5 | Authenticated private streaming, assigned doctor access, management denial |
+| `OTPProtectedSharingTests` | 5 | Sharing grant creation, recipient verification, 15-minute expiry, wrong user denial |
+| `AuditLogTests` | 3 | Admin log review, non-admin denial, outcome filtering |
+| `IntegrationAndStartupTests` | 3 | Clean imports, form validation, reverse URL pattern resolution |
+| `PatientPDFReportTests` | 12 | PDF streaming, disclaimer watermark, demographics rendering, doctor assignment |
+| `ConsentModelTests` | 4 | Grant string representations, active properties, purpose independence |
+| `ConsentManagementViewTests` | 23 | Patient self-service grant/revoke, cross-patient isolation, doctor consent gating, admin access, append-only event trail, idempotency, audit logging |
 
 ---
 
-## Security Notes
+## Manual Verification Checklist
 
-| Control | Status |
-|---|---|
-| CSRF protection | ✅ Enabled for all state-changing forms |
-| Session authentication | ✅ Django session middleware |
-| OTP hashing | ✅ SHA-256; plaintext never stored |
-| Role enforcement | ✅ Server-side in every view |
-| Private file storage | ✅ `media_private/`; never served via static URL |
-| File validation | ✅ Extension + magic-byte header checks |
-| Upload size limit | ✅ 5 MB |
-| Audit logging | ✅ All key actions logged; no secrets in logs |
-| `SECRET_KEY` | ⚠ Hardcoded development key — **replace before any deployment** |
-| `DEBUG = True` | ⚠ Development mode — **set `False` in production** |
-| `ALLOWED_HOSTS` | ⚠ `localhost` only — **restrict in production** |
-| Audit log integrity | ⚠ Application-level only — **not tamper-proof** |
-| Encryption at rest | ❌ Not implemented |
-| TLS/HTTPS | ❌ Not configured (use a reverse proxy in production) |
+- [x] **Demo Login:** Submit `admin@securehealth.demo`, retrieve 6-digit OTP from panel, successfully authenticate.
+- [x] **RBAC Enforcement:** Log in as `management@securehealth.demo`, visit `/patients/SH-P-0001/` and attempt to download documents or generate PDF reports—observe 302 redirect and `DENIED` audit entry.
+- [x] **Consent-Gated Document Access:** Log in as `doctor1@securehealth.demo`, visit `SH-P-0002` (Taylor Ford) and observe document access is blocked due to lack of consent.
+- [x] **Consent Grant:** Log in as `patient2@securehealth.demo`, visit `/patients/SH-P-0002/consent/`, and grant `Access Patient Documents` to `doctor1@securehealth.demo`.
+- [x] **Consent Verified:** Revisit `SH-P-0002` as `doctor1@securehealth.demo`—document list is now accessible.
+- [x] **Consent Revocation:** As `patient2@securehealth.demo`, click "Revoke". Verify Doctor 1 is immediately blocked again.
+- [x] **Consent History:** Open `/consent/<id>/history/` and verify chronological timeline shows both `Granted` and `Revoked` events.
+- [x] **PDF Report Generation:** Click "Generate PDF Report" on an authorized patient—verify PDF downloads with disclaimer banner and patient details.
+- [x] **Audit Log Review:** Log in as `admin@securehealth.demo`, open `/audit/`, and verify all login, grant, revoke, download, and denial events are logged.
+
+---
+
+## Security Architecture Summary
+
+```
+                      [ Client Browser ]
+                              │
+                    (HTTP GET/POST + CSRF)
+                              ▼
+                 [ _require_auth View Guard ]
+                              │
+               (Role-Based Access Control - RBAC)
+                              ▼
+            [ _can_access_patient() Assignment Check ]
+                              │
+               (Purpose-Specific Consent Engine)
+                              ▼
+             [ _has_consent() Patient Consent Check ]
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        ▼                     ▼                     ▼
+[ Document Vault ]    [ ReportLab PDF ]     [ Consent Manager ]
+ (media_private/)       (In-Memory Bytes)    (Append-Only Events)
+        │                     │                     │
+        └─────────────────────┼─────────────────────┘
+                              ▼
+                 [ AuditLog Security Logger ]
+                              ▼
+                   [( SQLite Database )]
+```
 
 ---
 
 ## Project Structure
 
-```
+```text
 patient_data_sec/
 ├── core/
-│   ├── forms.py                  # DocumentUploadForm, ShareDocumentForm
-│   ├── models.py                 # UserProfile, OTPToken, PatientProfile,
-│   │                             #   MedicalDocument, SharingGrant, AuditLog
-│   ├── views.py                  # All views including generate_patient_report
-│   ├── urls.py                   # All URL patterns
-│   ├── tests.py                  # 73 automated tests
-│   ├── admin.py
-│   ├── templatetags/core_tags.py
-│   └── management/commands/
-│       └── seed_demo.py          # Idempotent demo data seeder
+│   ├── admin.py                      # Django admin for 8 models with immutable audit log
+│   ├── apps.py                       # Application configuration
+│   ├── forms.py                      # DocumentUploadForm, ShareDocumentForm, ConsentGrantForm
+│   ├── management/
+│   │   └── commands/
+│   │       └── seed_demo.py          # Seeder for demo users, patients, docs, and consents
+│   ├── migrations/
+│   │   ├── 0001_initial.py           # UserProfile, Role, OTPToken, PatientProfile
+│   │   ├── 0002_auditlog_...py       # MedicalDocument, SharingGrant, AuditLog
+│   │   └── 0003_consentgrant_...py   # ConsentGrant, ConsentEvent
+│   ├── models.py                     # All domain models and status enumerations
+│   ├── templatetags/core_tags.py     # Template filter helpers
+│   ├── tests.py                      # 97 automated unit and integration tests
+│   ├── urls.py                       # 17 namespaced URL routes
+│   └── views.py                      # Authentication, RBAC, documents, consent, and PDF views
+├── docs/
+│   └── TECHNICAL_MANUAL.md           # Comprehensive 16-section technical documentation manual
+├── media_private/                    # Local storage for private medical documents
 ├── secure_health/
-│   ├── settings.py
-│   └── urls.py
+│   ├── settings.py                   # Project settings, WhiteNoise, media configuration
+│   ├── urls.py                       # Root route configuration delegating to core
+│   └── wsgi.py                       # WSGI application entrypoint
 ├── templates/
-│   ├── base.html
-│   └── core/                     # home, login, verify, dashboard,
-│                                 #   patient_list, patient_detail,
-│                                 #   document_list, document_upload,
-│                                 #   share_document, share_verify, audit_log
-├── static/css/main.css
-├── media_private/                # Private uploads (gitignored)
-├── staticfiles/                  # collectstatic output (gitignored)
-├── db.sqlite3                    # SQLite database (gitignored)
-├── requirements.txt
-├── .gitignore
-└── README.md
+│   ├── base.html                     # Responsive navbar, role indicators, feedback alerts
+│   └── core/
+│       ├── audit_log.html            # Admin audit log dashboard with filters
+│       ├── consent_history.html      # Chronological consent event timeline
+│       ├── consent_manage.html       # Patient consent manager (grant form + active/revoked tables)
+│       ├── dashboard.html            # Role-tailored user home view
+│       ├── document_list.html        # Medical document listing
+│       ├── document_upload.html      # Document upload with file validation
+│       ├── home.html                 # Public home landing page
+│       ├── login.html                # Step 1: Demo email entry & OTP panel
+│       ├── patient_detail.html       # Complete patient chart view
+│       ├── patient_list.html         # Directory view
+│       ├── share_document.html       # Doctor document sharing form
+│       ├── share_verify.html         # Recipient share OTP challenge
+│       └── verify.html               # Step 2: Login OTP verification
+├── db.sqlite3                        # SQLite database
+├── manage.py                         # Django CLI wrapper with automatic venv detection
+├── README.md                         # Project documentation and quick start
+└── requirements.txt                  # Pinned dependencies
 ```

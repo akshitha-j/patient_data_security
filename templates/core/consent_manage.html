@@ -1,0 +1,252 @@
+{% extends "base.html" %}
+{% block title %}Consent Management – {{ profile.patient_id }} – Secure Health{% endblock %}
+
+{% block content %}
+<div class="container py-5">
+
+  <!-- Breadcrumb -->
+  <nav aria-label="breadcrumb" class="mb-4">
+    <ol class="breadcrumb">
+      <li class="breadcrumb-item"><a href="{% url 'core:dashboard' %}">Dashboard</a></li>
+      {% if role != 'patient' %}
+      <li class="breadcrumb-item"><a href="{% url 'core:patient_list' %}">Patients</a></li>
+      {% endif %}
+      <li class="breadcrumb-item">
+        <a href="{% url 'core:patient_detail' profile.patient_id %}">{{ profile.patient_id }}</a>
+      </li>
+      <li class="breadcrumb-item active">Consent Management</li>
+    </ol>
+  </nav>
+
+  <!-- Header -->
+  <div class="d-flex align-items-center gap-3 mb-4 flex-wrap">
+    <div class="sh-kpi-icon bg-success-subtle rounded-circle p-3">
+      <i class="bi bi-shield-lock-fill text-success fs-3"></i>
+    </div>
+    <div>
+      <h3 class="fw-bold mb-0">Consent Management</h3>
+      <p class="text-muted mb-0 small">
+        Patient: <span class="fw-semibold">{{ profile.full_name }}</span>
+        &nbsp;|&nbsp; ID: <span class="font-monospace fw-semibold">{{ profile.patient_id }}</span>
+      </p>
+    </div>
+  </div>
+
+  <!-- Prototype disclaimer -->
+  <div class="alert alert-warning border border-warning-subtle d-flex gap-2 mb-4" role="alert">
+    <i class="bi bi-exclamation-triangle-fill flex-shrink-0 mt-1"></i>
+    <div>
+      <strong>Prototype Demonstration.</strong>
+      All patient data and consent records are fictional and for academic demonstration only.
+      This consent mechanism is a research prototype and is NOT a legally-binding medical consent system.
+    </div>
+  </div>
+
+  <!-- Messages -->
+  {% for msg in messages %}
+  <div class="alert alert-{{ msg.tags|default:'info' }} alert-dismissible fade show" role="alert">
+    {{ msg }}
+    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+  </div>
+  {% endfor %}
+
+  <div class="row g-4">
+
+    <!-- ── Active consents ── -->
+    <div class="col-lg-7">
+      <div class="card shadow-sm border-0">
+        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-check-circle me-2"></i>Active Consents</span>
+          <span class="badge bg-white text-success">{{ active.count }}</span>
+        </div>
+        <div class="card-body p-0">
+          {% if active %}
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead class="table-light">
+                <tr>
+                  <th>Doctor</th>
+                  <th>Purpose</th>
+                  <th>Granted</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for g in active %}
+                <tr>
+                  <td>
+                    <span class="fw-semibold">{{ g.grantee.get_full_name|default:g.grantee.username }}</span>
+                    <br><small class="text-muted">{{ g.grantee.email }}</small>
+                  </td>
+                  <td>
+                    <span class="badge bg-primary-subtle text-primary border border-primary-subtle">
+                      {{ g.get_purpose_display }}
+                    </span>
+                  </td>
+                  <td><small class="text-muted">{{ g.granted_at|date:"d M Y H:i" }}</small></td>
+                  <td class="text-nowrap">
+                    <a href="{% url 'core:consent_history' g.pk %}" class="btn btn-sm btn-outline-secondary me-1" title="View history">
+                      <i class="bi bi-clock-history"></i>
+                    </a>
+                    {% if is_patient %}
+                    <form method="post" action="{% url 'core:consent_revoke' g.pk %}" class="d-inline"
+                          onsubmit="return confirm('Revoke this consent? The doctor will no longer be able to perform this action.')">
+                      {% csrf_token %}
+                      <button type="submit" class="btn btn-sm btn-outline-danger" title="Revoke consent">
+                        <i class="bi bi-x-circle"></i> Revoke
+                      </button>
+                    </form>
+                    {% endif %}
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <div class="text-center text-muted py-4">
+            <i class="bi bi-shield-slash fs-2 d-block mb-2"></i>
+            No active consents. Grant consent below to allow doctors access.
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- ── Revoked consents ── -->
+      {% if revoked %}
+      <div class="card shadow-sm border-0 mt-4">
+        <div class="card-header bg-secondary text-white d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-x-circle me-2"></i>Revoked Consents</span>
+          <span class="badge bg-white text-secondary">{{ revoked.count }}</span>
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+              <thead class="table-light">
+                <tr>
+                  <th>Doctor</th>
+                  <th>Purpose</th>
+                  <th>Revoked</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for g in revoked %}
+                <tr class="text-muted">
+                  <td>{{ g.grantee.get_full_name|default:g.grantee.username }}</td>
+                  <td><span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle">{{ g.get_purpose_display }}</span></td>
+                  <td><small>{{ g.revoked_at|date:"d M Y H:i"|default:"—" }}</small></td>
+                  <td>
+                    <a href="{% url 'core:consent_history' g.pk %}" class="btn btn-sm btn-outline-secondary" title="View history">
+                      <i class="bi bi-clock-history"></i>
+                    </a>
+                  </td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- ── Grant new consent ── -->
+    {% if is_patient %}
+    <div class="col-lg-5">
+      <div class="card shadow-sm border-0 border-start border-4 border-primary">
+        <div class="card-header bg-primary text-white">
+          <i class="bi bi-plus-circle me-2"></i>Grant New Consent
+        </div>
+        <div class="card-body">
+          <p class="text-muted small mb-3">
+            Granting consent allows a specific doctor to perform a defined action on your record.
+            You can revoke any consent at any time.
+          </p>
+          <form method="post" action="{% url 'core:consent_grant' profile.patient_id %}" novalidate>
+            {% csrf_token %}
+
+            <!-- Doctor email -->
+            <div class="mb-3">
+              <label for="id_grantee_email" class="form-label fw-semibold">
+                Doctor Email <span class="text-danger">*</span>
+              </label>
+              {{ grant_form.grantee_email }}
+              {% if grant_form.grantee_email.errors %}
+              <div class="text-danger small mt-1">{{ grant_form.grantee_email.errors.0 }}</div>
+              {% endif %}
+              <div class="form-text">{{ grant_form.grantee_email.help_text }}</div>
+            </div>
+
+            <!-- Purpose -->
+            <div class="mb-3">
+              <label for="id_purpose" class="form-label fw-semibold">
+                Access Purpose <span class="text-danger">*</span>
+              </label>
+              {{ grant_form.purpose }}
+              {% if grant_form.purpose.errors %}
+              <div class="text-danger small mt-1">{{ grant_form.purpose.errors.0 }}</div>
+              {% endif %}
+            </div>
+
+            <!-- Notes -->
+            <div class="mb-3">
+              <label for="id_notes" class="form-label fw-semibold">Notes</label>
+              {{ grant_form.notes }}
+              {% if grant_form.notes.errors %}
+              <div class="text-danger small mt-1">{{ grant_form.notes.errors.0 }}</div>
+              {% endif %}
+            </div>
+
+            <button type="submit" class="btn btn-primary w-100">
+              <i class="bi bi-shield-check me-2"></i>Grant Consent
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- Purpose guide -->
+      <div class="card shadow-sm border-0 mt-3">
+        <div class="card-header bg-light fw-semibold text-secondary small">
+          <i class="bi bi-info-circle me-1"></i>What Each Purpose Allows
+        </div>
+        <div class="card-body p-0">
+          <ul class="list-group list-group-flush small">
+            <li class="list-group-item">
+              <span class="fw-semibold">View Patient Medical Record</span>
+              <p class="mb-0 text-muted">Records permission for the doctor to review your medical record.</p>
+            </li>
+            <li class="list-group-item">
+              <span class="fw-semibold text-primary">Access Patient Documents</span>
+              <p class="mb-0 text-muted">Allows a doctor to list and download your uploaded medical documents.</p>
+            </li>
+            <li class="list-group-item">
+              <span class="fw-semibold text-danger">Generate Patient PDF Report</span>
+              <p class="mb-0 text-muted">Allows a doctor to generate your PDF medical summary report.</p>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <!-- Admin read-only notice -->
+    <div class="col-lg-5">
+      <div class="alert alert-info d-flex gap-2">
+        <i class="bi bi-info-circle-fill flex-shrink-0 mt-1"></i>
+        <div>You are viewing consent records as <strong>Admin</strong>.
+        Only the patient can grant or revoke their own consent.</div>
+      </div>
+    </div>
+    {% endif %}
+
+  </div><!-- /row -->
+
+  <!-- Back button -->
+  <div class="mt-4">
+    <a href="{% url 'core:patient_detail' profile.patient_id %}" class="btn btn-outline-secondary">
+      <i class="bi bi-arrow-left me-1"></i>Back to Patient Record
+    </a>
+  </div>
+
+</div>
+{% endblock %}
